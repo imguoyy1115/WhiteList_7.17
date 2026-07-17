@@ -217,14 +217,15 @@ def build_entities(T):
 # 分界点：P33（下三分位）和 P67（上三分位），从上市公司数据计算
 FIN_DISCRETIZE_CONFIG = {
     # {指标key: [CSMAR列名, 节点名前缀, 越高越好?]}
+    # 2026-07-17 修正：所有F编码与fin_map对齐（新下载csmar-7.16数据集）
     "solvency_cr":     ("F010101A", "偿债_流动比率", True),
-    "solvency_dar":    ("F010701B", "偿债_资产负债率", False),   # 负债率越低越好
-    "profit_roa":      ("F050201B", "盈利_ROA", True),
-    "profit_roe":      ("F050501B", "盈利_ROE", True),
-    "operation_art":   ("F040201B", "经营_应收周转率", True),
-    "operation_apt":   ("F040801B", "经营_应付周转率", False),   # 过高可能意味着拖欠
+    "solvency_dar":    ("F011201A", "偿债_资产负债率", False),   # F011201A=资产负债率, 负债率越低越好
+    "profit_roa":      ("F050202B", "盈利_ROA", True),
+    "profit_roe":      ("F050502B", "盈利_ROE", True),
+    "operation_art":   ("F040202B", "经营_应收周转率", True),
+    "operation_apt":   ("F040802B", "经营_应付周转率", False),   # 过高可能意味着拖欠
     "growth_tagr":     ("F080601A", "发展_总资产增长率", True),
-    "growth_revgr":    ("F081601B", "发展_营收增长率", True),
+    "growth_revgr":    ("F081602C", "发展_营收增长率", True),
     "cashflow_cfoni":  ("F060101B", "现金流_经营现金流", True),
     "risklevel_dfl":   ("F070101B", "风险_财务杠杆", False),
     "risklevel_dol":   ("F070201B", "风险_经营杠杆", False),
@@ -348,10 +349,20 @@ def build_features_v5(T, E):
         rev_growth_list.append(0.0)
         asset_turnover_list.append(0.0)
 
-    X_ent[:n, 8] = rev_growth_list
-    M_ent[:n, 8] = 0.0
-    X_ent[:n, 9] = asset_turnover_list
-    M_ent[:n, 9] = 0.0
+    # 2026-07-17 修正：M_ent 只对确实有财务数据的企业置 0，其余保持 1（缺失）
+    # 否则 FinTemporalEncoder 的 fin_all_missing 永远不会触发 MLP fallback
+    for i in range(nl):
+        rec = financial_records.get(i, {})
+        if "REVGR" in rec:
+            X_ent[i, 8] = rec["REVGR"]
+            M_ent[i, 8] = 0.0
+        if "ART" in rec:
+            X_ent[i, 9] = rec["ART"]
+            M_ent[i, 9] = 0.0
+    # 非上市企业（>= nl）保持 M_ent=1（全部缺失），FinTemporalEncoder 自动走 MLP fallback
+    for i in range(nl, n):
+        X_ent[i, 8] = rev_growth_list[i]
+        X_ent[i, 9] = asset_turnover_list[i]
     col = 10
 
     # ── 3.6 诉讼严重程度特征 (2 维，跟 v4 一致) ──
@@ -550,7 +561,7 @@ def build_edges_v5(T, E, fin_nodes):
     la_src = la_full["Symbol"].astype(str).apply(lambda x: ent_id(x, E)).values
     # 尝试从案由列分类（可能叫 CaseReason / CaseType 等）
     case_col = None
-    for col_name in ["CaseReason", "CaseType", "ActionType", "ExecutnStus"]:
+    for col_name in ["LATypes", "CaseReason", "CaseType", "ActionType", "ExecutnStus"]:
         if col_name in la_full.columns:
             case_col = col_name
             break
