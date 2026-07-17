@@ -1,6 +1,0 @@
-InstitutionID [上市公司ID] - null
-Symbol [证券代码] - null
-ShortName [证券简称] - null
-EndDate [统计年度] - null
-IndustryCode [行业代码] - 中国上市公司协会行业分类代码。
-IsSCFBusiness [是否存在供应链金融业务] - 0：否；1：是。上市公司统计年度是否存在供应链金融业务。

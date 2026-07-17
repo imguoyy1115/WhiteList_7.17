@@ -21,7 +21,6 @@ env/
 
 # Data files (keep csmar datasets local only)
 csmar/
-csmar-7.16/
 *.rar
 *.zip
 
