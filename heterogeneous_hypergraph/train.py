@@ -116,7 +116,6 @@ class HyperHeteroModel(nn.Module):
             └─→ HeteroChannelEncoder → h_feat (N, 128)
 
       FusionGate(h_struct, h_feat) → h_fusion (N, 64)
-        → fusion_proj (64→128) → Concat → (N, 192)
         → PostProj(MLP) → z_v (N, 64)
         → MultiTaskHeads → logit_white, logit_risk, logit_grade
     ==========================================================================
@@ -154,7 +153,7 @@ class HyperHeteroModel(nn.Module):
             hint_dim=8,
         )
 
-        self.fusion_dim_val = FUSION_HIDDEN + HIDDEN_DIM  # 64 + 128 = 192
+        self.fusion_dim_val = FUSION_HIDDEN  # 64
 
         # ── 财务特征时序编码（v5.4: 12 维全量 x_seq → GRU 压缩 → out_dim 维） ──
         self.fin_temporal = FinTemporalEncoder(
@@ -175,9 +174,6 @@ class HyperHeteroModel(nn.Module):
 
         # ── 预测头 ──
         self.heads = MultiTaskHeads(in_dim=64)
-
-        # ── 融合后投影（为图3风险传播网络预留接口） ──
-        self.fusion_proj = nn.Linear(FUSION_HIDDEN, HIDDEN_DIM)  # 64 → 128
 
     def forward(self, x_dict: dict, edge_index_dict: dict,
                 hyperedges: dict, num_enterprises: int,
@@ -217,12 +213,8 @@ class HyperHeteroModel(nn.Module):
         h_fusion = self.fusion_gate(h_struct, h_feat,
                                     struct_hint=hint_ent)               # (N, 64)
 
-        # ── 5. 融合后投影 ──
-        h_proj = self.fusion_proj(h_fusion)                             # (N, 64) → (N, 128)
-        h_combined = torch.cat([h_fusion, h_proj], dim=-1)             # (N, 192)
-
-        # ── 6. MLP 投影 → 预测头 ──
-        z_v = self.post_proj(h_combined)                                # (N, 64)
+        # ── 5. MLP 投影 → 预测头 ──
+        z_v = self.post_proj(h_fusion)                                  # (N, 64)
         logit_white, logit_risk, logit_grade = self.heads(z_v)
 
         return logit_white, logit_risk, logit_grade

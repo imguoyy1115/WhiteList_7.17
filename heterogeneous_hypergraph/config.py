@@ -83,7 +83,6 @@ ABLATION_NO_TEMPORAL = False      # True = 去掉 GRU 时序，退化为 MLP 投
 FIN_DIM = 12                     # x_seq 中财务指标数量
 FIN_OUT_DIM = 4                   # FinTemporalEncoder 输出维度（压缩后再进异构通道）
 FIN_SEQ_INDICES = list(range(FIN_DIM))  # [0..11] 所有 12 个财务指标进 FinTemporalEncoder
-FIN_SEQ_INDICES = [8, 5]
 
 # ============================================================================
 # 边类型定义（v5 扩展为 6 种）
