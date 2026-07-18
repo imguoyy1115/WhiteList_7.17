@@ -406,6 +406,9 @@ def build_features_v5(T, E):
         M_ent[i, col] = 0.0
     col += 1
 
+    # ── 3.6b SCF 打分卡（在归一化前，使用原始值） ──
+    risk_scf = _compute_scf_risk_scores(financial_records, X_ent, n, nl)
+
     # ── 3.7 归一化 ──
     mask_normal = np.ones(nl, dtype=bool)
     st_ids = set()
@@ -423,7 +426,7 @@ def build_features_v5(T, E):
     print(f"  Enterprise feature dim: {DIM_ENT}, coverage: {mask_real.sum()}/{nl}"
           f" (ST: {len(st_ids & set(range(nl)))})")
 
-    return X_ent, M_ent, fin_nodes, scaler, fin_records_by_period
+    return X_ent, M_ent, fin_nodes, scaler, fin_records_by_period, risk_scf
 
 
 def _build_financial_state_nodes(financial_records, nl):
@@ -485,6 +488,113 @@ def _build_financial_state_nodes(financial_records, nl):
             node_id += 1
 
     return fin_nodes, thresholds
+
+
+# ═══════════════════════════════════════════════════════════
+# SCF 打分卡：风险分数计算（归一化前调用，使用原始值）
+# ═══════════════════════════════════════════════════════════
+def _compute_scf_risk_scores(financial_records, X_ent_raw, n_total, nl):
+    """
+    ==========================================================================
+    国内供应链金融打分卡 — 四维度加权计算 0-1 风险分数。
+
+    四个子维度:
+      1. 财务健康 (30%): CR(流动比率) + DAR(资产负债率) + ICR(利息保障倍数)
+      2. 供应链地位 (25%): BankLoanSize(融资能力) + SupplierPower1(议价力)
+      3. 诉讼合规 (25%): 诉讼金额 + 诉讼严重程度
+      4. 关联企业质量 (20%): 上市/非上市身份
+
+    每个指标用百分位映射（自适应数据分布）：
+      - 越高越好的指标: 子风险分 = 1 - 百分位（高值→低风险）
+      - 越高越差的指标: 子风险分 = 百分位（高值→高风险）
+      - 缺失值/非上市企业: 子风险分 = 0.5（中性）
+
+    返回: risk_scf (N,) ∈ [0, 1], 越高越危险
+    ==========================================================================
+    """
+    N = n_total
+
+    def _percentile_scores(raw_vals, higher_better):
+        """将原始值按百分位映射到 0-1 风险子分数"""
+        valid = [v for v in raw_vals if v is not None and not np.isnan(v)]
+        if len(valid) < 30:
+            # 数据太少，用等风险中性
+            return np.full(N, 0.5, dtype=np.float32)
+
+        valid_arr = np.array(valid)
+        scores = np.full(N, 0.5, dtype=np.float32)  # 默认中性
+        for i in range(nl):
+            v = raw_vals[i]
+            if v is not None and not np.isnan(v):
+                pct = (valid_arr < v).mean()  # 百分位 ∈ [0, 1]
+                if higher_better:
+                    scores[i] = 1.0 - pct     # 高值 → 低风险
+                else:
+                    scores[i] = pct            # 高值 → 高风险
+        # 非上市企业保持中性 0.5
+        return scores
+
+    # ── 维度1: 财务健康 (30%) ──
+    cr_vals  = [financial_records.get(i, {}).get("CR")   for i in range(N)]
+    dar_vals = [financial_records.get(i, {}).get("DAR")  for i in range(N)]
+    icr_vals = [financial_records.get(i, {}).get("ICR")  for i in range(N)]
+
+    fin_cr  = _percentile_scores(cr_vals,  higher_better=True)   # CR 越高越好
+    fin_dar = _percentile_scores(dar_vals, higher_better=False)   # DAR 越高越差
+    fin_icr = _percentile_scores(icr_vals, higher_better=True)   # ICR 越高越好
+
+    dim_financial = (fin_cr + fin_dar + fin_icr) / 3.0  # 等权
+
+    # ── 维度2: 供应链地位 (25%) ──
+    # BankLoanSize: X_ent col 6  (原始值),  越高 → 融资能力越强 → 越低风险
+    # SupplierPower1: X_ent col 7 (原始值), 越高 → 议价力越强 → 越低风险
+    bank_loan = [float(X_ent_raw[i, 6]) if i < nl and X_ent_raw[i, 6] != 0 else None
+                 for i in range(N)]
+    supplier_power = [float(X_ent_raw[i, 7]) if i < nl and X_ent_raw[i, 7] != 0 else None
+                      for i in range(N)]
+
+    scf_bank   = _percentile_scores(bank_loan,      higher_better=True)
+    scf_power  = _percentile_scores(supplier_power,  higher_better=True)
+
+    dim_scf = (scf_bank + scf_power) / 2.0
+
+    # ── 维度3: 诉讼合规 (25%) ──
+    # X_ent cols 10-11 是 log1p 变换后的值，越高 → 越高风险
+    lawsuit_amount  = [float(X_ent_raw[i, 10]) if X_ent_raw[i, 10] > 0 else None
+                       for i in range(N)]
+    lawsuit_severity = [float(X_ent_raw[i, 11]) if X_ent_raw[i, 11] > 0 else None
+                        for i in range(N)]
+
+    law_amount  = _percentile_scores(lawsuit_amount,  higher_better=False)
+    law_severity = _percentile_scores(lawsuit_severity, higher_better=False)
+
+    dim_lawsuit = (law_amount + law_severity) / 2.0
+
+    # ── 维度4: 关联企业质量 (20%) ──
+    dim_peer = np.full(N, 0.7, dtype=np.float32)  # 非上市公司默认较高风险
+    dim_peer[:nl] = 0.3                            # 上市公司默认较低风险
+
+    # ── 加权汇总 ──
+    risk_scf = (
+        0.30 * dim_financial +
+        0.25 * dim_scf +
+        0.25 * dim_lawsuit +
+        0.20 * dim_peer
+    ).astype(np.float32)
+
+    risk_scf = np.clip(risk_scf, 0.0, 1.0)
+
+    print(f"\n  [SCF 打分卡] 风险分数统计 (归一化前):")
+    print(f"    上市公司 (n={nl}):     mean={risk_scf[:nl].mean():.4f}, "
+          f"median={np.median(risk_scf[:nl]):.4f}")
+    print(f"    非上市企业 (n={N-nl}): mean={risk_scf[nl:].mean():.4f}, "
+          f"median={np.median(risk_scf[nl:]):.4f}")
+    print(f"    子维度均值: 财务={dim_financial[:nl].mean():.3f}, "
+          f"供应链={dim_scf[:nl].mean():.3f}, "
+          f"诉讼={dim_lawsuit[:nl].mean():.3f}, "
+          f"关联={dim_peer[:nl].mean():.3f}")
+
+    return risk_scf
 
 
 # ═══════════════════════════════════════════════════════════
@@ -784,7 +894,7 @@ def build_hyperedges(E, edge_index_dict, nl):
 # ═══════════════════════════════════════════════════════════
 # Step 5: 标签 + 组装
 # ═══════════════════════════════════════════════════════════
-def build_labels_and_assemble_v5(T, E, X_ent, M_ent, fin_nodes, ei, hyperedges, fin_records_by_period=None):
+def build_labels_and_assemble_v5(T, E, X_ent, M_ent, fin_nodes, ei, hyperedges, fin_records_by_period=None, risk_scf=None):
     print("\n[5/5] Labels + assembly (v5)...")
     n, nl = E["n_total"], E["n_listed"]
 
@@ -923,6 +1033,8 @@ def build_labels_and_assemble_v5(T, E, X_ent, M_ent, fin_nodes, ei, hyperedges, 
     struct_hint = struct_hint[keep_list]
     if x_seq is not None:
         x_seq = x_seq[keep_list]
+    if risk_scf is not None:
+        risk_scf = risk_scf[keep_list]
 
     # 映射标签
     y_white = y_white[keep_list]
@@ -1006,6 +1118,7 @@ def build_labels_and_assemble_v5(T, E, X_ent, M_ent, fin_nodes, ei, hyperedges, 
         x_struct=x_struct, x_missing=x_missing,
         struct_hint=struct_hint_dict,
         x_seq=torch.tensor(x_seq) if x_seq is not None else None,
+        risk_scf=torch.tensor(risk_scf) if risk_scf is not None else None,
     )
     data.summary()
     return data
@@ -1198,7 +1311,7 @@ def load_csmar_data_v5():
     E = build_entities(T)
     stages.append(("Entities", time.time() - t0))
     t0 = time.time()
-    X_ent, M_ent, fin_nodes, scaler, fin_records_by_period = build_features_v5(T, E)
+    X_ent, M_ent, fin_nodes, scaler, fin_records_by_period, risk_scf = build_features_v5(T, E)
     stages.append(("Features", time.time() - t0))
     t0 = time.time()
     ei = build_edges_v5(T, E, fin_nodes)
@@ -1207,7 +1320,7 @@ def load_csmar_data_v5():
     hyperedges = build_hyperedges(E, ei, E["n_listed"])
     stages.append(("Hyperedges", time.time() - t0))
     t0 = time.time()
-    data = build_labels_and_assemble_v5(T, E, X_ent, M_ent, fin_nodes, ei, hyperedges, fin_records_by_period)
+    data = build_labels_and_assemble_v5(T, E, X_ent, M_ent, fin_nodes, ei, hyperedges, fin_records_by_period, risk_scf=risk_scf)
     stages.append(("Assembly", time.time() - t0))
     print("\nTiming:")
     for name, sec in stages:

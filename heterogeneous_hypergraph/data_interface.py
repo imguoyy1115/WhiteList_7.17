@@ -72,6 +72,9 @@ class HeteroGraphData:
     # ---- 半年报时序原始特征（替代 v4 的 x_seq） ----
     x_seq: Optional[torch.Tensor] = None  # (N_ent, 4, 13)  仅非财务特征
 
+    # ---- SCF 打分卡风险分数（模型训练后传播用） ----
+    risk_scf: Optional[torch.Tensor] = None  # (N_ent,) ∈ [0,1], 越高越危险
+
     # ---- 元信息 ----
     num_enterprises: int = 0
     num_listed: int = 0
@@ -96,6 +99,8 @@ class HeteroGraphData:
             self.struct_hint = {k: v.to(device) for k, v in self.struct_hint.items()}
         if self.x_seq is not None:
             self.x_seq = self.x_seq.to(device)
+        if self.risk_scf is not None:
+            self.risk_scf = self.risk_scf.to(device)
         return self
 
     def summary(self):
