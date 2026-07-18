@@ -27,8 +27,8 @@ XGBoost Baseline — 使用 v5 数据管线 (csmar_loader)，纯表格二分类
   python xgboost_baseline.py
 
 对比（在 main_v2.py 等脚本中查看）:
-  main_v2_no_temporal.py (特征分工 + FinMLP + Γ):  0.8086
-  main_v2.py             (特征分工 + FinGRU + Γ):  0.8074
+  main_v2_no_temporal.py (特征分工 + FinMLP):      0.8086
+  main_v2.py             (特征分工 + FinGRU):        0.8074
   xgboost_baseline.py    (纯表格 XGBoost):          ???
 ================================================================================
 """
@@ -338,8 +338,8 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"              Test AUC    Val AUC")
     print(f"  XGBoost     {results['Test_AUC']:.4f}      {results['Val_AUC_Best_History']:.4f}   (纯表格 13维，无图)")
-    print(f"  GNN v5.2    0.8086      0.7872   (main_v2_no_temporal, 特征分工 + FinMLP + Γ)")
-    print(f"  GNN v5.2    0.8074      0.7875   (main_v2, 特征分工 + FinGRU + Γ)")
+    print(f"  GNN v5.3    0.8086      0.7872   (main_v2_no_temporal, 特征分工 + FinMLP)")
+    print(f"  GNN v5.3    0.8074      0.7875   (main_v2, 特征分工 + FinGRU)")
     print(f"  ─────────────────────────────────")
     gap = 0.8086 - results['Test_AUC']
     if gap > 0:

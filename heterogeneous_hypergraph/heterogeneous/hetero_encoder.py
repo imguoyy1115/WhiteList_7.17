@@ -30,7 +30,6 @@ class HeteroChannelEncoder(nn.Module):
     与 v4 DualOutputEncoder 的区别：
       - 输入节点类型从 1 种变为 4 种
       - 去掉了 FeatureGate（FeatureGate 在异构通道之前独立工作）
-      - 去掉了 msg_extractors（Γ 矩阵独立模块处理消息）
       - 只输出 enterprise 节点的表示 h_feat
     ==========================================================================
     """

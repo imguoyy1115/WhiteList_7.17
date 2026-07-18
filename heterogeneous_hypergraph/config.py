@@ -37,11 +37,6 @@ NUM_LAWSUIT_TYPES = 8      # 诉讼类型节点数
 NUM_SCF_TYPES = 6          # SCF合约类型节点数
 HETERO_LAYERS = 1          # 异构图卷积层数（特征查找节点 1 层足够，2 层过拟合）
 
-# ── Γ 矩阵 ──
-# 关系类型: trade, equity, has_financial, has_lawsuit, uses_scf, legal_rep
-NUM_EDGE_TYPES = 6
-GAMMA_LR = 0.01
-
 # ── 时序编码器 ──
 SEQ_LEN = 4                # 半年报时序步数（4 个半年 = 2 年）
 GRU_HIDDEN = 32            # GRU 隐藏维度
@@ -78,12 +73,9 @@ BATCH_SIZE = 512
 # ── 损失权重 ──
 LAMBDA_RISK = 0.5
 LAMBDA_GRADE = 0.3
-LAMBDA_GAMMA_REG = 0.001    # 熵正则（鼓励跨关系探索，力度轻）
-LAMBDA_STRUCT = 0.05       # 新增：超图结构一致性正则（同超边内预测平滑）
-LAMBDA_SPARSE = 0.01       # 新增：Γ 非对角线稀疏正则
+LAMBDA_STRUCT = 0.05       # 超图结构一致性正则（同超边内预测平滑）
 
 # ── 消融实验（默认全部关闭 = 完整模型） ──
-ABLATION_NO_GAMMA = False     # True = Γ 退化为 I（消融跨关系传播）
 ABLATION_NO_TEMPORAL = False      # True = 去掉 GRU 时序，退化为 MLP 投影
 ABLATION_NO_FEATURE_SPLIT = False  # False = v5.2 特征分工（同构通道 SCF+诉讼 10 维 / 异构通道 财务 2 维）
 
