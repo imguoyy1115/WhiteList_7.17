@@ -81,6 +81,7 @@ ABLATION_NO_TEMPORAL = False      # True = 去掉 GRU 时序，退化为 MLP 投
 # ── 财务特征（v5.4: 财务特征从 X_ent 移除，全部走 x_seq → FinTemporalEncoder） ──
 # INDICATOR_ORDER: CR,DAR,ICR,ROA,ROE,ART,APT,TAGR,REVGR,CFONI,DFL,DOL
 FIN_DIM = 12                     # x_seq 中财务指标数量
+FIN_OUT_DIM = 4                   # FinTemporalEncoder 输出维度（压缩后再进异构通道）
 FIN_SEQ_INDICES = list(range(FIN_DIM))  # [0..11] 所有 12 个财务指标进 FinTemporalEncoder
 FIN_SEQ_INDICES = [8, 5]
 

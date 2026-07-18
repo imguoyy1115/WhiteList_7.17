@@ -50,9 +50,10 @@ class FinTemporalEncoder(nn.Module):
     消融模式 (ablation=True): 仅 Emb 路径，退化为静态嵌入
     ==========================================================================
     """
-    def __init__(self, fin_dim=12, gru_hidden=8, dropout=0.2, ablation=False):
+    def __init__(self, fin_dim=12, out_dim=4, gru_hidden=8, dropout=0.2, ablation=False):
         super().__init__()
         self.fin_dim = fin_dim
+        self.out_dim = out_dim
         self.gru_hidden = gru_hidden
         self.ablation = ablation
 
@@ -64,36 +65,38 @@ class FinTemporalEncoder(nn.Module):
                 batch_first=True,
                 dropout=0.0,
             )
-            self.gru_proj = nn.Linear(gru_hidden, fin_dim)
+            self.gru_proj = nn.Linear(gru_hidden, out_dim)
 
-        # 用于中小企业 fallback: 把 fin_missing_emb 投影到 fin_dim
+        # 用于中小企业 fallback: 把 fin_missing_emb 投影到 out_dim
         self.emb_proj = nn.Sequential(
             nn.Linear(fin_dim, gru_hidden),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(gru_hidden, fin_dim),
+            nn.Linear(gru_hidden, out_dim),
         )
 
     def forward(self, x_fin_seq, fin_all_missing, fin_missing_emb):
         """
         x_fin_seq:       (N, 4, fin_dim)  全量 12 维财务时序
         fin_all_missing: (N,)             完全缺失财务数据的企业
-        fin_missing_emb: (fin_dim,)       可学习嵌入（替代缺失企业的财务表示）
-        returns:         (N, fin_dim)     时序感知的财务特征
+        fin_missing_emb: (fin_dim,)       可学习嵌入（12 维原始空间）
+        returns:         (N, out_dim)     压缩后的财务特征（4 维）
         """
         N = x_fin_seq.shape[0]
-        fin_emb = self.emb_proj(fin_missing_emb)                    # (fin_dim,)
+        fin_emb = self.emb_proj(fin_missing_emb)                    # (out_dim,)
+        has_data = (~fin_all_missing).float().unsqueeze(-1)         # (N, 1)
 
         if self.ablation:
-            return fin_emb.unsqueeze(0).expand(N, -1)               # (N, fin_dim)
+            # 消融: 静态 MLP 投影最后一期（上市公司） / embedding（中小企业）
+            x_last = x_fin_seq[:, -1, :]                            # (N, fin_dim)
+            fin_static = self.emb_proj(x_last)                      # (N, out_dim)
+            return has_data * fin_static + (1 - has_data) * fin_emb.unsqueeze(0)
 
         # 路径A: GRU 时序编码
         gru_out, _ = self.gru(x_fin_seq)                            # (N, 4, gru_hidden)
-        fin_gru = self.gru_proj(gru_out[:, -1, :])                  # (N, fin_dim)
+        fin_gru = self.gru_proj(gru_out[:, -1, :])                  # (N, out_dim)
 
-        # 路径B: 可学习嵌入 (fin_emb)
         # Gate: 有财务数据 → 信 GRU；无 → 信 embedding
-        has_data = (~fin_all_missing).float().unsqueeze(-1)         # (N, 1)
         x_fin = has_data * fin_gru + (1.0 - has_data) * fin_emb.unsqueeze(0)
 
         return x_fin
@@ -109,7 +112,7 @@ class HyperHeteroModel(nn.Module):
         └─→ MultiViewHyperEncoder → h_struct (N, 128)
 
       x_seq 全量 12 维财务时序 (N, 4, 12)
-        └─→ FinTemporalEncoder(GRU + Emb fallback) → x_fin (N, 12)
+        └─→ FinTemporalEncoder(GRU 12→8→4 + Emb fallback) → x_fin (N, 4)
             └─→ HeteroChannelEncoder → h_feat (N, 128)
 
       FusionGate(h_struct, h_feat) → h_fusion (N, 64)
@@ -124,6 +127,7 @@ class HyperHeteroModel(nn.Module):
 
         ent_dim = in_dims.get("enterprise", 11)               # X_ent: 纯结构特征
         fin_dim = _cfg.FIN_DIM                                 # 12: x_seq 全量财务指标
+        fin_out_dim = _cfg.FIN_OUT_DIM                         # 4: FinTemporalEncoder 输出维度
 
         # 财务缺失企业的可学习嵌入（替代填零，送入 FinTemporalEncoder 的 Emb 路径）
         self.fin_missing_emb = nn.Parameter(torch.randn(fin_dim) * 0.01)
@@ -134,8 +138,8 @@ class HyperHeteroModel(nn.Module):
             hidden=HYPER_HIDDEN,
         )
 
-        # ── 异构通道：特征图（吃 FinTemporalEncoder 输出的财务特征） ──
-        hetero_in_dims = {**in_dims, "enterprise": fin_dim}
+        # ── 异构通道：特征图（吃 FinTemporalEncoder 输出的压缩财务特征） ──
+        hetero_in_dims = {**in_dims, "enterprise": fin_out_dim}
         self.hetero_encoder = HeteroChannelEncoder(
             in_dims=hetero_in_dims,
             edge_types=edge_types,
@@ -152,9 +156,10 @@ class HyperHeteroModel(nn.Module):
 
         self.fusion_dim_val = FUSION_HIDDEN + HIDDEN_DIM  # 64 + 128 = 192
 
-        # ── 财务特征时序编码（v5.4: 12 维全量 x_seq 进 GRU） ──
+        # ── 财务特征时序编码（v5.4: 12 维全量 x_seq → GRU 压缩 → out_dim 维） ──
         self.fin_temporal = FinTemporalEncoder(
             fin_dim=fin_dim,
+            out_dim=fin_out_dim,
             gru_hidden=8,
             dropout=DROPOUT,
             ablation=_cfg.ABLATION_NO_TEMPORAL,
@@ -196,10 +201,11 @@ class HyperHeteroModel(nn.Module):
             x_fin_seq = x_seq[:, :, :_cfg.FIN_DIM]                     # (N, 4, 12)
             fin_all_missing = (x_fin_seq.abs().sum(dim=(1, 2)) < 1e-8) # 全零序列 = 无数据
             x_fin = self.fin_temporal(x_fin_seq, fin_all_missing,
-                                      self.fin_missing_emb)             # (N, 12)
+                                      self.fin_missing_emb)             # (N, fin_out_dim)
         else:
-            # 无 x_seq: 全部用 embedding
-            x_fin = self.fin_missing_emb.unsqueeze(0).expand(N_ent, -1)
+            # 无 x_seq: 全部用 embedding（经 emb_proj 投影到 out_dim）
+            x_fin = self.fin_temporal.emb_proj(self.fin_missing_emb)
+            x_fin = x_fin.unsqueeze(0).expand(N_ent, -1)
 
         # ── 3. 异构通道: x_fin → HeteroConv ──
         x_dict_gated = {**x_dict, "enterprise": x_fin}
