@@ -28,7 +28,7 @@ class HeteroGraphData:
 
     # ---- 节点特征（4 种节点类型） ----
     x_dict: Dict[str, torch.Tensor]
-    # {"enterprise": (N_ent, 13),         ← 仅 SCF + 诉讼 + 营收/资产
+    # {"enterprise": (N_ent, 11),         ← 纯结构: SCF(8) + 诉讼(2) + 预留(1)
     #  "financial_state": (N_fin, 8),     ← 统计描述 embedding
     #  "lawsuit_type": (N_law, 8),        ← 诉讼类型 embedding
     #  "scf_type": (N_scf, 8)}            ← SCF 类型 embedding

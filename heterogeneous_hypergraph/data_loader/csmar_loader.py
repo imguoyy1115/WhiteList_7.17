@@ -257,9 +257,9 @@ def build_features_v5(T, E):
       - 返回额外的 financial_states 字典用于后续建边
     ==========================================================================
     """
-    print("\n[3/5] Node features (v5: 13-dim Enterprise + FinancialState nodes)...")
+    print("\n[3/5] Node features (v5.4: 11-dim Enterprise, 纯结构特征)...")
     n, nl = E["n_total"], E["n_listed"]
-    DIM_ENT = 13  # SCF(8) + 营收/资产(2) + 已占用(预留维度, 3)
+    DIM_ENT = 11  # SCF(8) + 诉讼(2) + 预留(1), 财务特征全部移入 x_seq
     X_ent = np.zeros((n, DIM_ENT), dtype=np.float32)
     M_ent = np.ones((n, DIM_ENT), dtype=np.float32)
     col = 0
@@ -333,39 +333,10 @@ def build_features_v5(T, E):
                     M_ent[eid, col] = 0.0
         col += 1
 
-    # ── 3.4 SCF flags (3 维，合并进 col) → 8+3=11 但有些SCF维度已占用 ──
-    #     实际 SCF 维度: 8 个 trade credit + 已有的预留位
-    #     此处 col 已经走到 8，后面 5 维给营收/资产 + 诉讼
+    # ── 3.4 财务特征不再写入 X_ent（v5.4: 全部走 x_seq → FinTemporalEncoder） ──
+    #     col 当前 = 8（SCF 8 维已填），接下去是诉讼 2 维 + 预留 1 维 = 11 维
 
-    # ── 3.5 营收增长 + 资产周转 (2 维) ──
-    #     从 financial_records 提取（已在上面收集好了）
-    rev_growth_list = []
-    asset_turnover_list = []
-    for i in range(nl):
-        rec = financial_records.get(i, {})
-        rev_growth_list.append(rec.get("REVGR", 0.0))
-        asset_turnover_list.append(rec.get("ART", 0.0))
-    for i in range(nl, n):
-        rev_growth_list.append(0.0)
-        asset_turnover_list.append(0.0)
-
-    # 2026-07-17 修正：M_ent 只对确实有财务数据的企业置 0，其余保持 1（缺失）
-    # 否则 FinTemporalEncoder 的 fin_all_missing 永远不会触发 MLP fallback
-    for i in range(nl):
-        rec = financial_records.get(i, {})
-        if "REVGR" in rec:
-            X_ent[i, 8] = rec["REVGR"]
-            M_ent[i, 8] = 0.0
-        if "ART" in rec:
-            X_ent[i, 9] = rec["ART"]
-            M_ent[i, 9] = 0.0
-    # 非上市企业（>= nl）保持 M_ent=1（全部缺失），FinTemporalEncoder 自动走 MLP fallback
-    for i in range(nl, n):
-        X_ent[i, 8] = rev_growth_list[i]
-        X_ent[i, 9] = asset_turnover_list[i]
-    col = 10
-
-    # ── 3.6 诉讼严重程度特征 (2 维，跟 v4 一致) ──
+    # ── 3.5 诉讼严重程度特征 (2 维, col 8-9) ──
     la_full = T["lawsuit"]
     min_la_ts = pd.Timestamp(MIN_LAWSUIT_DATE)
     la_dates = None
@@ -559,10 +530,10 @@ def _compute_scf_risk_scores(financial_records, X_ent_raw, n_total, nl):
     dim_scf = (scf_bank + scf_power) / 2.0
 
     # ── 维度3: 诉讼合规 (25%) ──
-    # X_ent cols 10-11 是 log1p 变换后的值，越高 → 越高风险
-    lawsuit_amount  = [float(X_ent_raw[i, 10]) if X_ent_raw[i, 10] > 0 else None
+    # X_ent cols 8-9 是 log1p 变换后的值，越高 → 越高风险
+    lawsuit_amount  = [float(X_ent_raw[i, 8]) if X_ent_raw[i, 8] > 0 else None
                        for i in range(N)]
-    lawsuit_severity = [float(X_ent_raw[i, 11]) if X_ent_raw[i, 11] > 0 else None
+    lawsuit_severity = [float(X_ent_raw[i, 9]) if X_ent_raw[i, 9] > 0 else None
                         for i in range(N)]
 
     law_amount  = _percentile_scores(lawsuit_amount,  higher_better=False)

@@ -24,8 +24,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
-# ── 特征分工 + 去掉时序 ──
-config.ABLATION_NO_FEATURE_SPLIT = False
+# ── 消融: 去掉时序 ──
 config.ABLATION_NO_TEMPORAL = True
 
 from config import (

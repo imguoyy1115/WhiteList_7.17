@@ -75,21 +75,13 @@ LAMBDA_RISK = 0.5
 LAMBDA_GRADE = 0.3
 LAMBDA_STRUCT = 0.05       # 超图结构一致性正则（同超边内预测平滑）
 
-# ── 消融实验（默认全部关闭 = 完整模型） ──
+# ── 消融实验 ──
 ABLATION_NO_TEMPORAL = False      # True = 去掉 GRU 时序，退化为 MLP 投影
-ABLATION_NO_FEATURE_SPLIT = False  # False = v5.2 特征分工（同构通道 SCF+诉讼 10 维 / 异构通道 财务 2 维）
 
-# ── 特征分工（v5.2：同构通道看关系，异构通道看财务 + 财务时序GRU） ──
-# 同构通道取 SCF(8) + 诉讼(2) = 10 维，排除财务特征以避免中小企业零值噪声
-STRUCT_FEATURE_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 10, 11]
-# 异构通道取营收增长率(8) + 资产周转率(9) = 2 维，聚焦经营表现
-FINANCIAL_FEATURE_INDICES = [8, 9]
-# col 12 为预留维度，暂归入同构通道（修改 STRUCT_FEATURE_INDICES 即可调整）
-
-# x_seq 中对应 FINANCIAL_FEATURE_INDICES 的财务指标索引
+# ── 财务特征（v5.4: 财务特征从 X_ent 移除，全部走 x_seq → FinTemporalEncoder） ──
 # INDICATOR_ORDER: CR,DAR,ICR,ROA,ROE,ART,APT,TAGR,REVGR,CFONI,DFL,DOL
-# FINANCIAL_FEATURE_INDICES[0]=8(营收增长率=REVGR) → x_seq idx 8
-# FINANCIAL_FEATURE_INDICES[1]=9(资产周转率=ART)    → x_seq idx 5
+FIN_DIM = 12                     # x_seq 中财务指标数量
+FIN_SEQ_INDICES = list(range(FIN_DIM))  # [0..11] 所有 12 个财务指标进 FinTemporalEncoder
 FIN_SEQ_INDICES = [8, 5]
 
 # ============================================================================

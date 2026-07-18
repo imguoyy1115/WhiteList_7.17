@@ -12,12 +12,10 @@ XGBoost Baseline — 使用 v5 数据管线 (csmar_loader)，纯表格二分类
   GNN AUC - XGBoost AUC = 图结构 + 异构通道带来的真实增益
   （XGBoost 拿不到图，GNN 如果赢了才是图的价值）
 
-特征说明（13 维）：
-  col 0-7:   SCF 贸易信用（8 维）
-  col 8:     营收增长率
-  col 9:     资产周转率
-  col 10-11: 诉讼（金额 + 严重程度）
-  col 12:    预留位
+特征说明（11 维，v5.4 财务特征已移入 x_seq）：
+  col 0-7:  SCF 贸易信用（8 维）
+  col 8-9:  诉讼（金额 + 严重程度）
+  col 10:    预留位
 
 不含 x_seq、x_struct、struct_hint 等任何包含图/时序信息的特征，
 确保 baseline 是纯表格单企业视角。
@@ -126,11 +124,9 @@ def build_tabular_features():
         "SCF_ObtainedTradeCredit",    # 5  获得的贸易信用
         "SCF_BankLoanSize",           # 6  银行贷款规模
         "SCF_SupplierPower1",         # 7  供应商议价力
-        "Revenue_Growth",             # 8  营收增长率
-        "Asset_Turnover",             # 9  资产周转率
-        "Lawsuit_TotalAmount_log1p",  # 10 诉讼累计金额(log1p)
-        "Lawsuit_WeightedSeverity",   # 11 诉讼加权严重分(log1p)
-        "Reserved",                   # 12 预留位
+        "Lawsuit_TotalAmount_log1p",  # 8  诉讼累计金额(log1p)
+        "Lawsuit_WeightedSeverity",   # 9  诉讼加权严重分(log1p)
+        "Reserved",                   # 10 预留位
     ]
 
     print(f"  特征维度: {n_features} (纯原始企业特征，无图结构信息)")
@@ -347,9 +343,9 @@ if __name__ == "__main__":
     else:
         print(f"  Δ (GNN增益)  {gap:+.4f}  ← GNN 未超越纯表格 baseline，需排查")
     print(f"\n  说明:")
-    print(f"    XGBoost: 仅 X_ent (13 维原始企业特征)")
-    print(f"    GNN:      超图4视图 + 异构双通道 + FeatureGate + FusionGate")
-    print(f"              + 13维 → [10维结构 | 2维财务] 特征分工")
+    print(f"    XGBoost: 仅 X_ent (11 维纯结构特征)")
+    print(f"    GNN:      超图4视图 + 异构双通道 + FusionGate")
+    print(f"              + X_ent(11维) → 超图 | x_seq(12维) → FinTemporalEncoder → 异构")
     print(f"    切分:     复用 v5 数据管线的 train/val/test mask（完全对齐）")
     print(f"    含义:     {'GNN 的图结构对白名单识别有正向价值' if gap > 0 else '当前 GNN 架构未充分挖掘图信息'}")
     print("=" * 60)
