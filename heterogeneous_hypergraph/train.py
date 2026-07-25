@@ -6,7 +6,7 @@
   - AMP 混合精度（显存砍 ~40%）
   - 单次全批量前向（去掉假 mini-batch 循环，原来每 epoch 算 6 遍）
   - 每 epoch 强制清理 CUDA cache + GC
-  - HeteroConv 层数减为 1（6 边 SAGEConv 的中间张量是最大内存杀手）
+  - HeteroConv 层数减为 1（GATv2 + FeatureGate，内存可控）
 ================================================================================
 """
 
@@ -102,18 +102,86 @@ class FinTemporalEncoder(nn.Module):
         return x_fin
 
 
+# ═══════════════════════════════════════════════════════════
+# 财务特征门控（Feature Gate）
+# ═══════════════════════════════════════════════════════════
+class FeatureGate(nn.Module):
+    """
+    ==========================================================================
+    逐维度可学习门控，基于供应链金融政策先验初始化。
+
+    不是硬关掉某些指标，而是给模型一个起点：核心指标初始门控高（接近 1），
+    辅助指标初始门控低（接近 0），数据驱动去微调。
+
+    初始化逻辑（INDICATOR_ORDER: CR,DAR,ICR,ROA,ROE,ART,APT,TAGR,REVGR,CFONI,DFL,DOL）:
+      ─ 核心 (0.8): ART(应收账款周转率), CFONI(经营现金流) — 供应链金融的底层资产
+      ─ 重要 (0.7): CR(流动比率), DAR(资产负债率), ICR(利息保障倍数) — 银行授信入场券
+      ─ 中等 (0.5): ROA, ROE, REVGR — 核心企业有意义，中小企业信号弱
+      ─ 辅助 (0.3): APT, TAGR, DFL, DOL — 冗余或数据支撑不足
+    ==========================================================================
+    """
+
+    # 指标顺序与 config.INDICATOR_ORDER 对齐
+    _INDICATOR_NAMES = [
+        "CR", "DAR", "ICR", "ROA", "ROE", "ART",
+        "APT", "TAGR", "REVGR", "CFONI", "DFL", "DOL",
+    ]
+
+    def __init__(self, fin_dim: int = 12):
+        super().__init__()
+        assert fin_dim == 12, "FeatureGate 为 12 维财务指标设计"
+
+        # 政策先验初始门控值
+        init_gates = torch.tensor([
+            0.7,  # CR:  流动比率 — 授信入场券
+            0.7,  # DAR: 资产负债率 — 杠杆底线
+            0.7,  # ICR: 利息保障倍数 — 偿债能力
+            0.5,  # ROA: 总资产收益率 — 大企业指标
+            0.5,  # ROE: 净资产收益率 — 大企业指标
+            0.8,  # ART: 应收账款周转率 — 供应链金融灵魂指标
+            0.3,  # APT: 应付账款周转率 — 与 ART 信息重叠
+            0.3,  # TAGR: 总资产增长率 — 供应链场景信号模糊
+            0.5,  # REVGR: 营收增长率 — 双面信号
+            0.8,  # CFONI: 经营现金流/净利润 — 恒大后必看
+            0.3,  # DFL: 财务杠杆 — 与 DAR 高度冗余
+            0.3,  # DOL: 经营杠杆 — 非上市企业数据不足以支撑
+        ])
+
+        # 用 logit 参数化，确保门控值始终在 (0, 1)
+        self.gate_logits = nn.Parameter(
+            torch.log(init_gates / (1.0 - init_gates))
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (N, 12), 返回逐维门控后的 (N, 12)"""
+        gamma = torch.sigmoid(self.gate_logits).to(x.device)  # (12,)
+        return x * gamma.unsqueeze(0)
+
+    @torch.no_grad()
+    def gate_values(self) -> "dict[str, float]":
+        """返回当前各指标的门控值，用于监控和日志"""
+        gamma = torch.sigmoid(self.gate_logits).cpu()
+        return {name: round(float(gamma[i]), 4)
+                for i, name in enumerate(self._INDICATOR_NAMES)}
+
+    def gate_vector(self) -> torch.Tensor:
+        """返回门控向量 (12,)"""
+        return torch.sigmoid(self.gate_logits)
+
+
 class HyperHeteroModel(nn.Module):
     """
     ==========================================================================
-    v5.4 完整模型：超图异构双通道 + 财务特征全量 GRU（FeatureGate/特征分流 已删除）
+    v5.4 完整模型：超图异构双通道 + 财务特征全量 GRU + FeatureGate
 
     数据流:
       Enterprise 特征 (N, 11, 纯结构)
         └─→ MultiViewHyperEncoder → h_struct (N, 128)
 
       x_seq 全量 12 维财务时序 (N, 4, 12)
-        └─→ FinTemporalEncoder(GRU 12→8→4 + Emb fallback) → x_fin (N, 4)
-            └─→ HeteroChannelEncoder → h_feat (N, 128)
+        └─→ FinTemporalEncoder(GRU 12→4→12 + Emb fallback) → x_fin (N, 12)
+            └─→ FeatureGate(逐维门控) → x_fin' (N, 12)
+                └─→ HeteroChannelEncoder → h_feat (N, 128)
 
       FusionGate(h_struct, h_feat) → h_fusion (N, 64)
         → PostProj(MLP) → z_v (N, 64)
@@ -164,6 +232,9 @@ class HyperHeteroModel(nn.Module):
             ablation=_cfg.ABLATION_NO_TEMPORAL,
         )
 
+        # ── 财务特征门控（政策先验初始化，逐维学习重要性） ──
+        self.feature_gate = FeatureGate(fin_dim=fin_out_dim)
+
         # ── 融合后 MLP 投影 ──
         self.post_proj = nn.Sequential(
             nn.Linear(self.fusion_dim_val, 64),
@@ -202,6 +273,9 @@ class HyperHeteroModel(nn.Module):
             # 无 x_seq: 全部用 embedding（经 emb_proj 投影到 out_dim）
             x_fin = self.fin_temporal.emb_proj(self.fin_missing_emb)
             x_fin = x_fin.unsqueeze(0).expand(N_ent, -1)
+
+        # ── 2.5. 财务特征门控: 逐维学习指标重要性 ──
+        x_fin = self.feature_gate(x_fin)                                 # (N, fin_out_dim)
 
         # ── 3. 异构通道: x_fin → HeteroConv ──
         x_dict_gated = {**x_dict, "enterprise": x_fin}
@@ -430,6 +504,14 @@ def train(model, data, epochs: int = EPOCHS):
 
     elapsed = time.time() - t0
     print(f"  训练完成, {elapsed:.1f}s, 最佳验证 AUC={best_auc:.4f}")
+
+    # 打印学习到的特征门控值
+    print(f"\n  [Feature Gate] 各指标门控值 (训练后):")
+    gate_dict = model.feature_gate.gate_values()
+    for name, val in gate_dict.items():
+        bar = "█" * int(val * 20)
+        tier = "核心" if val > 0.7 else ("重要" if val > 0.55 else ("中等" if val > 0.4 else "辅助"))
+        print(f"    {name:>6s}  {val:.4f}  {bar:<20s} {tier}")
 
     # 恢复最佳模型（从 CPU copy 回 device）
     model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
