@@ -3,7 +3,12 @@
 异构通道编码器（Heterogeneous Channel Encoder）
 ================================================================================
 在包含 4 种节点类型（enterprise / financial_state / lawsuit_type / scf_type）
-的异构图上做 HeteroConv 消息传递。
+的异构图上做 HeteroConv 消息传递，使用 GATv2 注意力聚合替代等权平均。
+
+GATv2 相比 SAGEConv 的关键差异:
+  - SAGEConv: 所有邻居等权平均，信息密度高的邻居被稀释
+  - GATv2Conv: 每个节点学习关注哪些邻居，有财务数据的大企业自动获得更高权重
+  - 动态注意力（GATv2 修复了 GAT 的静态注意力问题，query/key 先变换再打分）
 
 企业与财务/诉讼/SCF 节点的边让 GNN 学到：
   - "有高盈利能力的企业的交易对手，信用更可靠"
@@ -18,8 +23,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import SAGEConv, HeteroConv, Linear
-from config import HIDDEN_DIM, DROPOUT, NODE_TYPES, HETERO_LAYERS
+from torch_geometric.nn import GATv2Conv, HeteroConv, Linear
+from config import HIDDEN_DIM, DROPOUT, NODE_TYPES, HETERO_LAYERS, GAT_HEADS
 
 
 class HeteroChannelEncoder(nn.Module):
@@ -47,14 +52,19 @@ class HeteroChannelEncoder(nn.Module):
             if dim is not None and dim > 0:
                 self.proj[ntype] = Linear(dim, hidden)
 
-        # ── HeteroConv 层 ──
+        # ── HeteroConv 层（GATv2 注意力替换 SAGEConv 等权聚合） ──
         self.convs = nn.ModuleList()
         for _ in range(num_layers):
             conv_dict = {}
             for etype in edge_types:
                 src, rel, dst = etype
                 if src in self.proj and dst in self.proj:
-                    conv_dict[etype] = SAGEConv(hidden, hidden)
+                    # GATv2: 每头 hidden // heads 维，concat 后 = hidden，残差维度一致
+                    conv_dict[etype] = GATv2Conv(
+                        hidden, hidden // GAT_HEADS,
+                        heads=GAT_HEADS, concat=True,
+                        dropout=dropout,
+                    )
             self.convs.append(HeteroConv(conv_dict, aggr="mean"))
 
         self.dropout = nn.Dropout(dropout)

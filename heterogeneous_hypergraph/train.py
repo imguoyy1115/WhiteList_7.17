@@ -50,7 +50,7 @@ class FinTemporalEncoder(nn.Module):
     消融模式 (ablation=True): 仅 Emb 路径，退化为静态嵌入
     ==========================================================================
     """
-    def __init__(self, fin_dim=12, out_dim=4, gru_hidden=8, dropout=0.2, ablation=False):
+    def __init__(self, fin_dim=12, out_dim=12, gru_hidden=4, dropout=0.2, ablation=False):
         super().__init__()
         self.fin_dim = fin_dim
         self.out_dim = out_dim
@@ -159,7 +159,7 @@ class HyperHeteroModel(nn.Module):
         self.fin_temporal = FinTemporalEncoder(
             fin_dim=fin_dim,
             out_dim=fin_out_dim,
-            gru_hidden=8,
+            gru_hidden=4,
             dropout=DROPOUT,
             ablation=_cfg.ABLATION_NO_TEMPORAL,
         )
@@ -244,11 +244,14 @@ def compute_losses(logit_white, logit_risk, logit_grade,
     if hyperedges and LAMBDA_STRUCT > 0:
         prob_w = torch.sigmoid(logit_white.squeeze(-1))
         count = 0
-        # 每个视图只采样前 50 条超边（避免全量遍历撑爆显存）
+        # 每个视图随机采样（避免全量遍历撑爆显存，同时保证每 epoch 覆盖不同超边）
         for view_name, he_list in hyperedges.items():
-            sample_n = min(len(he_list), 50)
-            for i in range(sample_n):
-                he = he_list[i].to(logit_white.device)
+            if len(he_list) == 0:
+                continue
+            sample_n = min(len(he_list), 300)
+            indices = torch.randperm(len(he_list))[:sample_n]
+            for i in indices:
+                he = he_list[i.item()].to(logit_white.device)
                 if len(he) >= 2:
                     preds = prob_w[he]
                     L_struct += ((preds - preds.mean()) ** 2).mean()

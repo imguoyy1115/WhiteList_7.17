@@ -26,7 +26,7 @@ from sklearn.model_selection import train_test_split
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data_interface import HeteroGraphData
 
-CSMAR_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "csmar-7.16")
+CSMAR_DIR = "/content/"
 SEED = 42
 np.random.seed(SEED)
 
@@ -42,7 +42,7 @@ def _clean(s):
     return str(s).replace("（","(").replace("）",")").replace(" ","").replace("*","").strip()
 
 def _read(folder, fname):
-    p = os.path.join(CSMAR_DIR, folder, fname)
+    p = os.path.join(CSMAR_DIR, fname)
     return pd.read_csv(p, encoding="utf-8-sig", low_memory=False, on_bad_lines="skip")
 
 def _stock(s):

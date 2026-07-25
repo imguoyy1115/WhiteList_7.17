@@ -36,10 +36,11 @@ NUM_FIN_STATES = 18        # 财务状态节点数（6指标 × 3档）
 NUM_LAWSUIT_TYPES = 8      # 诉讼类型节点数
 NUM_SCF_TYPES = 6          # SCF合约类型节点数
 HETERO_LAYERS = 1          # 异构图卷积层数（特征查找节点 1 层足够，2 层过拟合）
+GAT_HEADS = 4              # GATv2 注意力头数（每头 hidden // heads 维，concat 后 = hidden）
 
 # ── 时序编码器 ──
 SEQ_LEN = 4                # 半年报时序步数（4 个半年 = 2 年）
-GRU_HIDDEN = 32            # GRU 隐藏维度
+GRU_HIDDEN = 4             # GRU 隐藏维度（4 最优，8/16 递减）
 GRU_LAYERS = 2
 
 # ── 融合门 ──
@@ -58,7 +59,7 @@ DEVICE = "cuda"
 EPOCHS = 800
 LR = 1e-3
 LR_HYPER = 3e-4            # 超图通道学习率（单独设置，更保守）
-WEIGHT_DECAY = 5e-4
+WEIGHT_DECAY = 1.5e-3
 EARLY_STOP_PATIENCE = 50
 
 USE_AMP = True             # AMP 混合精度（T4 开 AMP 加速 ~1.5-2x，省显存）
@@ -73,7 +74,7 @@ BATCH_SIZE = 512
 # ── 损失权重 ──
 LAMBDA_RISK = 0.5
 LAMBDA_GRADE = 0.3
-LAMBDA_STRUCT = 0.05       # 超图结构一致性正则（同超边内预测平滑）
+LAMBDA_STRUCT = 0           # 结构正则已确认无效，关闭
 
 # ── 消融实验 ──
 ABLATION_NO_TEMPORAL = False      # True = 去掉 GRU 时序，退化为 MLP 投影
@@ -81,7 +82,7 @@ ABLATION_NO_TEMPORAL = False      # True = 去掉 GRU 时序，退化为 MLP 投
 # ── 财务特征（v5.4: 财务特征从 X_ent 移除，全部走 x_seq → FinTemporalEncoder） ──
 # INDICATOR_ORDER: CR,DAR,ICR,ROA,ROE,ART,APT,TAGR,REVGR,CFONI,DFL,DOL
 FIN_DIM = 12                     # x_seq 中财务指标数量
-FIN_OUT_DIM = 4                   # FinTemporalEncoder 输出维度（压缩后再进异构通道）
+FIN_OUT_DIM = 12                  # FinTemporalEncoder 输出维度（与输入同维，不进异构通道前不压缩）
 FIN_SEQ_INDICES = list(range(FIN_DIM))  # [0..11] 所有 12 个财务指标进 FinTemporalEncoder
 
 # ============================================================================
