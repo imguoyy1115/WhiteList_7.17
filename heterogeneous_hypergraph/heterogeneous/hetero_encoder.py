@@ -64,6 +64,7 @@ class HeteroChannelEncoder(nn.Module):
                         hidden, hidden // GAT_HEADS,
                         heads=GAT_HEADS, concat=True,
                         dropout=dropout,
+                        add_self_loops=False,
                     )
             self.convs.append(HeteroConv(conv_dict, aggr="mean"))
 
