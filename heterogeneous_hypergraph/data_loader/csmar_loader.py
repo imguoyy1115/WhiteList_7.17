@@ -485,40 +485,41 @@ def _compute_scf_risk_scores(financial_records, X_ent_raw, n_total, nl):
     """
     N = n_total
 
-    def _percentile_scores(raw_vals, higher_better):
-        """将原始值按百分位映射到 0-1 风险子分数"""
+    def _percentile_scores(raw_vals, higher_better, score_all=False):
+        """将原始值按百分位映射到 0-1 风险子分数。
+
+        score_all=False: 仅对上市公司 (0..nl-1) 打分，非上市默认 0.5
+        score_all=True:  对所有企业打分（用于诉讼等全量可用的数据）
+        """
         valid = [v for v in raw_vals if v is not None and not np.isnan(v)]
         if len(valid) < 30:
-            # 数据太少，用等风险中性
             return np.full(N, 0.5, dtype=np.float32)
 
         valid_arr = np.array(valid)
-        scores = np.full(N, 0.5, dtype=np.float32)  # 默认中性
-        for i in range(nl):
+        scores = np.full(N, 0.5, dtype=np.float32)
+        score_end = N if score_all else nl
+        for i in range(score_end):
             v = raw_vals[i]
             if v is not None and not np.isnan(v):
-                pct = (valid_arr < v).mean()  # 百分位 ∈ [0, 1]
+                pct = (valid_arr < v).mean()
                 if higher_better:
                     scores[i] = 1.0 - pct     # 高值 → 低风险
                 else:
                     scores[i] = pct            # 高值 → 高风险
-        # 非上市企业保持中性 0.5
         return scores
 
-    # ── 维度1: 财务健康 (30%) ──
+    # ── 维度1: 财务健康 (30%) —— 仅上市公司有财报数据 ──
     cr_vals  = [financial_records.get(i, {}).get("CR")   for i in range(N)]
     dar_vals = [financial_records.get(i, {}).get("DAR")  for i in range(N)]
     icr_vals = [financial_records.get(i, {}).get("ICR")  for i in range(N)]
 
-    fin_cr  = _percentile_scores(cr_vals,  higher_better=True)   # CR 越高越好
-    fin_dar = _percentile_scores(dar_vals, higher_better=False)   # DAR 越高越差
-    fin_icr = _percentile_scores(icr_vals, higher_better=True)   # ICR 越高越好
+    fin_cr  = _percentile_scores(cr_vals,  higher_better=True)    # CR 越高越好
+    fin_dar = _percentile_scores(dar_vals, higher_better=False)    # DAR 越高越差
+    fin_icr = _percentile_scores(icr_vals, higher_better=True)    # ICR 越高越好
 
-    dim_financial = (fin_cr + fin_dar + fin_icr) / 3.0  # 等权
+    dim_financial = (fin_cr + fin_dar + fin_icr) / 3.0
 
-    # ── 维度2: 供应链地位 (25%) ──
-    # BankLoanSize: X_ent col 6  (原始值),  越高 → 融资能力越强 → 越低风险
-    # SupplierPower1: X_ent col 7 (原始值), 越高 → 议价力越强 → 越低风险
+    # ── 维度2: 供应链地位 (25%) —— 仅上市公司有 SCF 特征数据 ──
     bank_loan = [float(X_ent_raw[i, 6]) if i < nl and X_ent_raw[i, 6] != 0 else None
                  for i in range(N)]
     supplier_power = [float(X_ent_raw[i, 7]) if i < nl and X_ent_raw[i, 7] != 0 else None
@@ -529,21 +530,25 @@ def _compute_scf_risk_scores(financial_records, X_ent_raw, n_total, nl):
 
     dim_scf = (scf_bank + scf_power) / 2.0
 
-    # ── 维度3: 诉讼合规 (25%) ──
-    # X_ent cols 8-9 是 log1p 变换后的值，越高 → 越高风险
+    # ── 维度3: 诉讼合规 (25%) —— 全量企业可用，score_all=True ──
     lawsuit_amount  = [float(X_ent_raw[i, 8]) if X_ent_raw[i, 8] > 0 else None
                        for i in range(N)]
     lawsuit_severity = [float(X_ent_raw[i, 9]) if X_ent_raw[i, 9] > 0 else None
                         for i in range(N)]
 
-    law_amount  = _percentile_scores(lawsuit_amount,  higher_better=False)
-    law_severity = _percentile_scores(lawsuit_severity, higher_better=False)
+    law_amount  = _percentile_scores(lawsuit_amount,  higher_better=False, score_all=True)
+    law_severity = _percentile_scores(lawsuit_severity, higher_better=False, score_all=True)
 
     dim_lawsuit = (law_amount + law_severity) / 2.0
 
-    # ── 维度4: 关联企业质量 (20%) ──
-    dim_peer = np.full(N, 0.7, dtype=np.float32)  # 非上市公司默认较高风险
-    dim_peer[:nl] = 0.3                            # 上市公司默认较低风险
+    # ── 维度4: 关联企业质量 (20%) —— v5.5 修复: 连续化，不再一刀切 ──
+    # 上市公司: 基准 0.25，财务越健康 → 越低（0.18~0.45）
+    # 非上市:   利用诉讼维度做区分（唯一全量可用的信号），无诉讼→0.42，多诉讼→0.72
+    dim_peer = np.full(N, 0.55, dtype=np.float32)
+    dim_peer[:nl] = np.clip(0.18 + 0.27 * dim_financial[:nl], 0.18, 0.50)
+    # 非上市: dim_lawsuit 偏离 0.5 的程度反映诉讼风险
+    lawsuit_deviation = (dim_lawsuit[nl:] - 0.5) * 2.0  # [-1, +1]
+    dim_peer[nl:] = np.clip(0.42 + 0.30 * lawsuit_deviation, 0.35, 0.75)
 
     # ── 加权汇总 ──
     risk_scf = (
@@ -555,15 +560,19 @@ def _compute_scf_risk_scores(financial_records, X_ent_raw, n_total, nl):
 
     risk_scf = np.clip(risk_scf, 0.0, 1.0)
 
-    print(f"\n  [SCF 打分卡] 风险分数统计 (归一化前):")
-    print(f"    上市公司 (n={nl}):     mean={risk_scf[:nl].mean():.4f}, "
-          f"median={np.median(risk_scf[:nl]):.4f}")
-    print(f"    非上市企业 (n={N-nl}): mean={risk_scf[nl:].mean():.4f}, "
-          f"median={np.median(risk_scf[nl:]):.4f}")
-    print(f"    子维度均值: 财务={dim_financial[:nl].mean():.3f}, "
+    print(f"\n  [SCF 打分卡 v5.5] 风险分数统计:")
+    print(f"    上市公司 (n={nl}):       mean={risk_scf[:nl].mean():.4f}, "
+          f"median={np.median(risk_scf[:nl]):.4f}, "
+          f"std={risk_scf[:nl].std():.4f}")
+    print(f"    非上市企业 (n={N-nl}):   mean={risk_scf[nl:].mean():.4f}, "
+          f"median={np.median(risk_scf[nl:]):.4f}, "
+          f"std={risk_scf[nl:].std():.4f}")
+    print(f"    子维度均值(上市): 财务={dim_financial[:nl].mean():.3f}, "
           f"供应链={dim_scf[:nl].mean():.3f}, "
           f"诉讼={dim_lawsuit[:nl].mean():.3f}, "
           f"关联={dim_peer[:nl].mean():.3f}")
+    print(f"    子维度均值(非上市): 诉讼={dim_lawsuit[nl:].mean():.3f}, "
+          f"关联={dim_peer[nl:].mean():.3f}")
 
     return risk_scf
 

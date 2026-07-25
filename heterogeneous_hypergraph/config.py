@@ -23,7 +23,7 @@ MODEL_V4_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 # 模型超参数
 # ============================================================================
 HIDDEN_DIM = 128           # 统一隐藏维度
-DROPOUT = 0.2
+DROPOUT = 0.35
 
 # ── 同构通道（超图） ──
 NUM_HYPER_VIEWS = 4        # 超图视图数: supply, equity, legal_rep, industry
@@ -53,13 +53,13 @@ HEAD_BATCH_SIZE = 4096
 # ============================================================================
 # 训练配置
 # ============================================================================
-SEED = 42
+SEED = 1234
 DEVICE = "cuda"
-EPOCHS = 500
+EPOCHS = 800
 LR = 1e-3
 LR_HYPER = 3e-4            # 超图通道学习率（单独设置，更保守）
 WEIGHT_DECAY = 5e-4
-EARLY_STOP_PATIENCE = 80
+EARLY_STOP_PATIENCE = 50
 
 USE_AMP = True             # AMP 混合精度（T4 开 AMP 加速 ~1.5-2x，省显存）
 

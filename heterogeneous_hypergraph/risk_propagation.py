@@ -145,25 +145,40 @@ def compute_risk_propagation(model=None, data=None, alpha=0.7, K_max=100, tol=1e
 
     data = data.to(device)
 
-    # ── Step 1: 获取初始风险估计 r^(0) ──
+    # ── Step 1: 获取初始风险估计 r^(0) —— v5.5 融合 SCF + 模型 ──
     has_scf = hasattr(data, "risk_scf") and data.risk_scf is not None
-    if has_scf:
-        r_0 = data.risk_scf.float().to(device)
-        if verbose:
-            print(f"  初始风险分来源: SCF 打分卡 (四维度加权, n={r_0.shape[0]})")
-            print(f"    维度: 财务健康(30%) + 供应链地位(25%) + 诉讼合规(25%) + 关联质量(20%)")
-    elif model is not None:
-        model.eval()
-        logit_w, logit_r, logit_g = model(
+
+    def _model_risk_inference(m):
+        """用模型推理得到 risk 预测（复用代码）"""
+        m.eval()
+        logit_w, logit_r, logit_g = m(
             data.x_dict, data.edge_index_dict, data.hyperedges,
             data.num_enterprises,
             x_struct=data.x_struct, x_missing=data.x_missing,
             struct_hint=data.struct_hint,
             x_seq=data.x_seq if hasattr(data, "x_seq") and data.x_seq is not None else None,
         )
-        r_0 = torch.sigmoid(logit_r).squeeze(-1).to(device)
+        return torch.sigmoid(logit_r).squeeze(-1).to(device)
+
+    blend_weight = 0.45  # SCF 权重: 0.45 SCF + 0.55 模型
+
+    if has_scf and model is not None:
+        # 最优路径: SCF 领域知识 + 模型数据驱动，互补融合
+        r_scf = data.risk_scf.float().to(device)
+        r_model = _model_risk_inference(model)
+        r_0 = blend_weight * r_scf + (1.0 - blend_weight) * r_model
         if verbose:
-            print(f"  初始风险分来源: 模型 sigmoid(logit_risk) (退化为无 SCF 分数)")
+            print(f"  初始风险分来源: SCF打分卡({blend_weight:.0%}) + 模型({1-blend_weight:.0%}) 融合, n={r_0.shape[0]}")
+            print(f"    SCF: mean={r_scf.mean().item():.4f} std={r_scf.std().item():.4f}  |  "
+                  f"模型: mean={r_model.mean().item():.4f} std={r_model.std().item():.4f}")
+    elif has_scf:
+        r_0 = data.risk_scf.float().to(device)
+        if verbose:
+            print(f"  初始风险分来源: SCF 打分卡 (四维度加权, n={r_0.shape[0]})")
+    elif model is not None:
+        r_0 = _model_risk_inference(model)
+        if verbose:
+            print(f"  初始风险分来源: 模型 sigmoid(logit_risk) (无 SCF 分数)")
     else:
         raise ValueError("需要 data.risk_scf 或 model 来获取初始风险估计")
 
@@ -212,7 +227,8 @@ def compute_risk_propagation(model=None, data=None, alpha=0.7, K_max=100, tol=1e
     return r.cpu(), r_0.cpu(), converged, n_steps
 
 
-def save_risk_scores(r_final, r_init, data, output_dir=None, converged=True, n_steps=0):
+def save_risk_scores(r_final, r_init, data, output_dir=None, converged=True, n_steps=0,
+                    has_scf=True, has_model=False):
     """
     ==========================================================================
     保存所有企业的风险分数到 CSV + 生成传播报告。
@@ -246,15 +262,27 @@ def save_risk_scores(r_final, r_init, data, output_dir=None, converged=True, n_s
         "is_test": data.test_mask.cpu().numpy().astype(int),
     })
 
-    # 风险等级标记
-    df["risk_level_init"] = pd.cut(
-        df["risk_score_init"], bins=[0, 0.2, 0.5, 0.8, 1.0],
-        labels=["低风险", "中低风险", "中高风险", "高风险"]
-    )
-    df["risk_level_final"] = pd.cut(
-        df["risk_score"], bins=[0, 0.2, 0.5, 0.8, 1.0],
-        labels=["低风险", "中低风险", "中高风险", "高风险"]
-    )
+    # 风险等级标记 —— v5.5: 五档分位数分箱，保证每档 20% 企业有区分度
+    _LEVEL_LABELS = ["低风险", "中低风险", "中风险", "中高风险", "高风险"]
+    _FALLBACK_BINS = [0, 0.15, 0.35, 0.50, 0.65, 1.0]
+    try:
+        df["risk_level_init"] = pd.qcut(
+            df["risk_score_init"], q=[0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            labels=_LEVEL_LABELS,
+        )
+    except Exception:
+        df["risk_level_init"] = pd.cut(
+            df["risk_score_init"], bins=_FALLBACK_BINS, labels=_LEVEL_LABELS,
+        )
+    try:
+        df["risk_level_final"] = pd.qcut(
+            df["risk_score"], q=[0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            labels=_LEVEL_LABELS,
+        )
+    except Exception:
+        df["risk_level_final"] = pd.cut(
+            df["risk_score"], bins=_FALLBACK_BINS, labels=_LEVEL_LABELS,
+        )
 
     csv_path = os.path.join(output_dir, "risk_scores.csv")
     df.to_csv(csv_path, index=False, encoding="utf-8-sig")
@@ -272,16 +300,23 @@ def save_risk_scores(r_final, r_init, data, output_dir=None, converged=True, n_s
     auc_before = roc_auc_score(y_test, r_init_test) if y_test.sum() > 0 else 0.5
 
     # 检查来源
-    has_scf = hasattr(data, "risk_scf") and data.risk_scf is not None
-    source_str = "SCF 打分卡（四维度: 财务健康30% + 供应链地位25% + 诉讼合规25% + 关联质量20%）" \
-                 if has_scf else "模型 sigmoid(logit_risk)"
+    if has_scf and has_model:
+        source_str = "SCF打分卡(45%) + 模型logit_risk(55%) 融合"
+    elif has_scf:
+        source_str = "SCF 打分卡（四维度: 财务健康30% + 供应链地位25% + 诉讼合规25% + 关联质量20%）"
+    else:
+        source_str = "模型 sigmoid(logit_risk)"
 
     level_change = df["risk_level_init"] != df["risk_level_final"]
     n_changed = level_change.sum()
 
+    # 各等级分布
+    level_dist_init = df["risk_level_init"].value_counts().sort_index()
+    level_dist_final = df["risk_level_final"].value_counts().sort_index()
+
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("=" * 60 + "\n")
-        f.write("  供应链风险传播报告 (SCF打分卡 + DebtRank)\n")
+        f.write("  供应链风险传播报告 (SCF打分卡 + DebtRank) v5.5\n")
         f.write("=" * 60 + "\n\n")
         f.write(f"  初始风险分来源:     {source_str}\n")
         f.write(f"  总企业数:           {N}\n")
@@ -290,7 +325,7 @@ def save_risk_scores(r_final, r_init, data, output_dir=None, converged=True, n_s
         f.write(f"  传播状态:           {'收敛' if converged else '未收敛'}\n")
         f.write(f"  迭代步数:           {n_steps}\n\n")
         f.write(f"  ── 测试集 AUC 对比（白名单识别） ──\n")
-        f.write(f"  传播前 (SCF原始分):  {auc_before:.4f}\n")
+        f.write(f"  传播前 (r^(0)):      {auc_before:.4f}\n")
         f.write(f"  传播后 (DebtRank):   {auc_after:.4f}\n")
         f.write(f"  Δ AUC:               {auc_after - auc_before:+.4f}\n\n")
         f.write(f"  ── 全局风险分统计 ──\n")
@@ -298,7 +333,9 @@ def save_risk_scores(r_final, r_init, data, output_dir=None, converged=True, n_s
                 f"{r_init.mean().item():.4f} / {r_init.median().item():.4f} / {r_init.std().item():.4f}\n")
         f.write(f"  传播后 mean / median / std: "
                 f"{r_final.mean().item():.4f} / {r_final.median().item():.4f} / {r_final.std().item():.4f}\n\n")
-        f.write(f"  风险等级变化:\n")
+        f.write(f"  ── 风险等级分布（五档分位数分箱） ──\n")
+        f.write(f"  传播前: " + "  ".join(f"{lvl}:{cnt}" for lvl, cnt in level_dist_init.items()) + "\n")
+        f.write(f"  传播后: " + "  ".join(f"{lvl}:{cnt}" for lvl, cnt in level_dist_final.items()) + "\n")
         f.write(f"  等级变化企业数:     {n_changed} / {N} ({n_changed/N*100:.2f}%)\n")
 
     print(f"  [OK] 传播报告已保存: {report_path}")
@@ -326,8 +363,10 @@ def run_risk_propagation_pipeline(model, data, alpha=0.7, K_max=100, tol=1e-6):
         device=device, verbose=True,
     )
 
+    has_scf = hasattr(data, "risk_scf") and data.risk_scf is not None
     df = save_risk_scores(r_final, r_init, data,
-                          converged=converged, n_steps=n_steps)
+                          converged=converged, n_steps=n_steps,
+                          has_scf=has_scf, has_model=(model is not None))
 
     return r_final, r_init, df
 
